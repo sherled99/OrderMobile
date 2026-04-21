@@ -1,0 +1,26 @@
+{
+  "name": "dev_module",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "My project to add custom business logic via scripts in creatio mobile app",
+  "scripts": {
+    "build": "webpack",
+    "update-source-code": "node ./tools/prepare-for-debug.js",
+    "inject-on-device": "node ./tools/inject-on-device.js",
+    "build:update-source-code": "webpack && npm run update-source-code",
+    "build:inject-on-device": "webpack && npm run inject-on-device"
+  },
+  "dependencies": {
+    "@creatio/mobile-common": "latest"
+  },
+  "devDependencies": {
+    "path": "^0.12.7",
+    "ts-loader": "^9.4.2",
+    "ts-node": "^10.9.1",
+    "tslib": "^2.5.0",
+    "typescript": "^5.0.4",
+    "webpack": "^5.82.1",
+    "webpack-cli": "^5.1.1",
+    "cpx": "^1.5.0"
+  }
+}
