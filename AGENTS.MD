@@ -98,6 +98,10 @@ Pattern:
 5. Set target value with `request.$context.setAttribute(attributeName, value)`.
 6. Return `result`.
 
+Troubleshooting learned from `Order.Currency`:
+
+- If a field appears filled in UI/context before save but reaches backend insert as empty, first check the mobile page for duplicate controls bound to the same data source column. A second empty control can overwrite the value during save serialization.
+
 Existing example:
 
 - When order account changes, owner fields are loaded from `Account`:
