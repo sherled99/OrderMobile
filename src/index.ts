@@ -6,7 +6,9 @@ import {
     CompareFilter,
     CrtModule,
     CrtRequestHandler,
+    DataValueType,
     DoBootstrap,
+    FilterType,
     HandleViewModelAttributeChangeRequest,
     LoadDataRequest,
     Model,
@@ -19,9 +21,15 @@ const ORDER_MOBILE_PAGE = 'UsrOrderMobileEditPage';
 const ORDER_PRODUCT_MOBILE_PAGE = 'UsrOrderProductMobileEditPage';
 const ORDER_CONTRACT_ATTRIBUTE = 'OrderDS_UsrContract_k0jq8wn';
 const ORDER_CURRENCY_ATTRIBUTE = 'OrderDS_Currency_bpgbf8n';
+const ORDER_PRODUCT_PRODUCT_ATTRIBUTE = 'OrderProductDS_Product_hg2hy0q';
+const ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE =
+    `${ORDER_PRODUCT_PRODUCT_ATTRIBUTE}_List_BusinessRule_Filter`;
+const ORDER_PRODUCT_CUSTOMER_PRODUCT_ATTRIBUTE = 'UsrCustomerProduct';
+const ORDER_PRODUCT_PRICE_FILTER_KEY = '4fa2fdd6-87be-4f71-9b1d-0fda6b694c7d';
 const debugLog = (...args: unknown[]): void => {
     (globalThis as { console?: { log: (...items: unknown[]) => void } }).console?.log(...args);
 };
+let orderProductLastAppliedPriceComparisonType: ComparisonType | undefined;
 
 type LookupLike =
     | string
@@ -33,6 +41,106 @@ type LookupLike =
     }
     | null
     | undefined;
+
+type ProductPriceFilter = {
+    key?: string;
+    comparisonType?: ComparisonType;
+    rightExpression?: {
+        parameter?: {
+            value?: unknown;
+        };
+    };
+};
+
+async function applyOrderProductPriceFilter(
+    context: BaseRequest['$context'],
+    customerProductValue?: unknown
+): Promise<void> {
+    const resolvedCustomerProductValue = customerProductValue === undefined
+        ? await getContextAttributeValue(context, ORDER_PRODUCT_CUSTOMER_PRODUCT_ATTRIBUTE)
+        : customerProductValue;
+    const customerProduct = toBoolean(resolvedCustomerProductValue);
+    const comparisonType = customerProduct ? ComparisonType.Greater : ComparisonType.Equal;
+    const currentFilter = await getContextAttributeValue(
+        context,
+        ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE
+    ) as ProductPriceFilter | undefined;
+
+    if (
+        isSameProductPriceFilter(currentFilter, comparisonType) ||
+        orderProductLastAppliedPriceComparisonType === comparisonType
+    ) {
+        return;
+    }
+
+    orderProductLastAppliedPriceComparisonType = comparisonType;
+    await context.setAttribute(
+        ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE,
+        createProductPriceFilter(comparisonType)
+    );
+    debugLog(
+        `[UsrMobile] Product lookup business rule filter applied. ` +
+        `attribute=${ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE}, ` +
+        `customerProduct=${customerProduct}, condition=Price ${customerProduct ? '>' : '='} 0`
+    );
+}
+
+function createProductPriceFilter(comparisonType: ComparisonType): ProductPriceFilter {
+    return {
+        filterType: FilterType.Compare,
+        comparisonType,
+        isEnabled: true,
+        trimDateTimeParameterToDate: false,
+        leftExpression: {
+            expressionType: 0,
+            columnPath: 'Price'
+        },
+        rightExpression: {
+            expressionType: 2,
+            parameter: {
+                dataValueType: DataValueType.Money,
+                value: 0
+            }
+        },
+        isAggregative: false,
+        key: ORDER_PRODUCT_PRICE_FILTER_KEY
+    } as ProductPriceFilter;
+}
+
+function isSameProductPriceFilter(
+    filter: ProductPriceFilter | undefined,
+    comparisonType: ComparisonType
+): boolean {
+    return filter?.key === ORDER_PRODUCT_PRICE_FILTER_KEY
+        && Number(filter.comparisonType) === comparisonType
+        && Number(filter.rightExpression?.parameter?.value) === 0;
+}
+
+async function getContextAttributeValue(
+    context: BaseRequest['$context'],
+    attributeName: string
+): Promise<unknown> {
+    try {
+        if (typeof context.getAttribute === 'function') {
+            const value = await context.getAttribute(attributeName);
+            if (value !== undefined) {
+                return value;
+            }
+        }
+    } catch {
+        // Ignore getAttribute failures and try direct access.
+    }
+
+    try {
+        return await context[attributeName];
+    } catch {
+        return undefined;
+    }
+}
+
+function toBoolean(value: unknown): boolean {
+    return value === true || value === 'true' || value === 1;
+}
 
 @CrtRequestHandler({
     requestType: 'crt.LoadDataRequest',
@@ -66,8 +174,38 @@ export class OrderProductMobileFieldsStateHandler extends BaseRequestHandler<Loa
         const cardState = await request.$context['CardState'] as string;
 
         if (cardState !== 'add') {
-            await request.$context.setAttributePropertyValue('OrderProductDS_Product_hg2hy0q', 'readonly', true);
+            await request.$context.setAttributePropertyValue(ORDER_PRODUCT_PRODUCT_ATTRIBUTE, 'readonly', true);
             debugLog(`[UsrMobile] Product set to readonly for CardState: ${cardState}`);
+        }
+
+        return result;
+    }
+}
+
+@CrtRequestHandler({
+    requestType: 'crt.LoadDataRequest',
+    type: 'glb.OrderProductPriceFilterHandler',
+    scopes: [ORDER_PRODUCT_MOBILE_PAGE]
+})
+export class OrderProductPriceFilterHandler extends BaseRequestHandler<LoadDataRequest> {
+    public async handle(request: LoadDataRequest): Promise<unknown> {
+        await applyOrderProductPriceFilter(request.$context);
+
+        return this.next?.handle(request);
+    }
+}
+
+@CrtRequestHandler({
+    requestType: 'crt.HandleViewModelAttributeChangeRequest',
+    type: 'glb.OrderProductCustomerProductPriceFilterHandler',
+    scopes: [ORDER_PRODUCT_MOBILE_PAGE]
+})
+export class OrderProductCustomerProductPriceFilterHandler extends BaseRequestHandler<HandleViewModelAttributeChangeRequest> {
+    public async handle(request: HandleViewModelAttributeChangeRequest): Promise<unknown> {
+        const result = await this.next?.handle(request);
+
+        if (request.attributeName === ORDER_PRODUCT_CUSTOMER_PRODUCT_ATTRIBUTE) {
+            await applyOrderProductPriceFilter(request.$context, request.value);
         }
 
         return result;
@@ -280,6 +418,8 @@ export class OrderCurrencyByContractChangeHandler extends BaseRequestHandler<Han
         OrderMobileFieldsStateHandler,
         GlbCustomLoadDataRequestHandler,
         OrderCurrencyByContractChangeHandler,
+        OrderProductPriceFilterHandler,
+        OrderProductCustomerProductPriceFilterHandler,
         OrderProductMobileFieldsStateHandler
     ]
 })
