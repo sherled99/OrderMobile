@@ -42,8 +42,12 @@ Page constants:
 
 Important attributes:
 
+- Order account: `OrderDS_Account_5ohaihw`
 - Order contract: `OrderDS_UsrContract_k0jq8wn`
 - Order currency: `OrderDS_Currency_bpgbf8n`
+- Order owner: `OrderDS_Owner_eifsnwo`
+- Order marketing owner: `OrderDS_UsrMarketingOwner_cp2l7yl`
+- Order sales owner: `OrderDS_UsrSalesOwner_a91fe07`
 - Order product lookup: `OrderProductDS_Product_hg2hy0q`
 - Customer product flag: `UsrCustomerProduct`
 - Product lookup business-rule filter attribute: `OrderProductDS_Product_hg2hy0q_List_BusinessRule_Filter`
@@ -96,6 +100,10 @@ Pattern:
 
 Existing example:
 
+- When order account changes, owner fields are loaded from `Account`:
+  - `Order.Owner = Account.Owner`
+  - `Order.UsrMarketingOwner = Account.UsrMarketingOwner`
+  - `Order.UsrSalesOwner = Account.UsrSalesOwner`
 - When order contract changes, currency is loaded through `Contract -> UsrPricelist.UsrProductCurrency`.
 - Currency is normalized to `{ value, displayValue }` before setting.
 

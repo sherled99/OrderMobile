@@ -19,8 +19,12 @@ import {
 
 const ORDER_MOBILE_PAGE = 'UsrOrderMobileEditPage';
 const ORDER_PRODUCT_MOBILE_PAGE = 'UsrOrderProductMobileEditPage';
+const ORDER_ACCOUNT_ATTRIBUTE = 'OrderDS_Account_5ohaihw';
 const ORDER_CONTRACT_ATTRIBUTE = 'OrderDS_UsrContract_k0jq8wn';
 const ORDER_CURRENCY_ATTRIBUTE = 'OrderDS_Currency_bpgbf8n';
+const ORDER_OWNER_ATTRIBUTE = 'OrderDS_Owner_eifsnwo';
+const ORDER_MARKETING_OWNER_ATTRIBUTE = 'OrderDS_UsrMarketingOwner_cp2l7yl';
+const ORDER_SALES_OWNER_ATTRIBUTE = 'OrderDS_UsrSalesOwner_a91fe07';
 const ORDER_PRODUCT_PRODUCT_ATTRIBUTE = 'OrderProductDS_Product_hg2hy0q';
 const ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE =
     `${ORDER_PRODUCT_PRODUCT_ATTRIBUTE}_List_BusinessRule_Filter`;
@@ -50,6 +54,12 @@ type ProductPriceFilter = {
             value?: unknown;
         };
     };
+};
+
+type AccountOwnerValues = {
+    Owner?: unknown;
+    UsrMarketingOwner?: unknown;
+    UsrSalesOwner?: unknown;
 };
 
 async function applyOrderProductPriceFilter(
@@ -153,8 +163,8 @@ export class OrderMobileFieldsStateHandler extends BaseRequestHandler<LoadDataRe
         const cardState = await request.$context['CardState'] as string;
 
         if (cardState !== 'add') {
-            await request.$context.setAttributePropertyValue('OrderDS_Account_5ohaihw', 'readonly', true);
-            await request.$context.setAttributePropertyValue('OrderDS_UsrContract_k0jq8wn', 'readonly', true);
+            await request.$context.setAttributePropertyValue(ORDER_ACCOUNT_ATTRIBUTE, 'readonly', true);
+            await request.$context.setAttributePropertyValue(ORDER_CONTRACT_ATTRIBUTE, 'readonly', true);
             await request.$context.setAttributePropertyValue('OrderDS_UsrCloseDate_g8gnhee', 'readonly', true);
             debugLog(`[UsrMobile] Account, UsrContract, UsrCloseDate set to readonly for CardState: ${cardState}`);
         }
@@ -228,6 +238,131 @@ export class GlbCustomLoadDataRequestHandler extends BaseRequestHandler {
         }
 
         return await this.next?.handle(request);
+    }
+}
+
+@CrtRequestHandler({
+    requestType: 'crt.HandleViewModelAttributeChangeRequest',
+    type: 'glb.OrderOwnersByAccountChangeHandler',
+    scopes: [ORDER_MOBILE_PAGE]
+})
+export class OrderOwnersByAccountChangeHandler extends BaseRequestHandler<HandleViewModelAttributeChangeRequest> {
+    public async handle(request: HandleViewModelAttributeChangeRequest): Promise<unknown> {
+        const result = await this.next?.handle(request);
+
+        if (request.attributeName !== ORDER_ACCOUNT_ATTRIBUTE) {
+            return result;
+        }
+
+        const accountId = this.extractLookupId(request.value);
+        debugLog(`[UsrMobile] Account change detected. accountId=${accountId ?? 'n/a'}`);
+
+        if (!accountId) {
+            await this.setOwnerFields(request, {});
+            debugLog('[UsrMobile] Owner fields cleared because account is empty');
+            return result;
+        }
+
+        const ownerValues = await this.loadOwnerValuesByAccountId(accountId);
+        await this.setOwnerFields(request, ownerValues);
+        debugLog(
+            `[UsrMobile] Owner fields synced from account. ` +
+            `accountId=${accountId}, ` +
+            `ownerId=${this.extractLookupId(ownerValues.Owner) ?? 'n/a'}, ` +
+            `marketingOwnerId=${this.extractLookupId(ownerValues.UsrMarketingOwner) ?? 'n/a'}, ` +
+            `salesOwnerId=${this.extractLookupId(ownerValues.UsrSalesOwner) ?? 'n/a'}`
+        );
+
+        return result;
+    }
+
+    private async loadOwnerValuesByAccountId(accountId: string): Promise<AccountOwnerValues> {
+        const accountModel = await Model.create('Account');
+        const accounts = await accountModel.load({
+            attributes: [
+                { name: 'Owner', path: 'Owner' },
+                { name: 'UsrMarketingOwner', path: 'UsrMarketingOwner' },
+                { name: 'UsrSalesOwner', path: 'UsrSalesOwner' }
+            ],
+            parameters: [{
+                type: ModelParameterType.Filter,
+                value: new CompareFilter(
+                    ComparisonType.Equal,
+                    new ColumnExpression({ columnPath: 'Id' }),
+                    new ParameterExpression({ value: accountId })
+                )
+            }]
+        }) as AccountOwnerValues[];
+
+        return accounts?.[0] ?? {};
+    }
+
+    private async setOwnerFields(
+        request: HandleViewModelAttributeChangeRequest,
+        ownerValues: AccountOwnerValues
+    ): Promise<void> {
+        await request.$context.setAttribute(ORDER_OWNER_ATTRIBUTE, this.normalizeLookupValue(ownerValues.Owner));
+        await request.$context.setAttribute(
+            ORDER_MARKETING_OWNER_ATTRIBUTE,
+            this.normalizeLookupValue(ownerValues.UsrMarketingOwner)
+        );
+        await request.$context.setAttribute(
+            ORDER_SALES_OWNER_ATTRIBUTE,
+            this.normalizeLookupValue(ownerValues.UsrSalesOwner)
+        );
+    }
+
+    private normalizeLookupValue(value: unknown): unknown {
+        const id = this.extractLookupId(value);
+
+        if (!id) {
+            return null;
+        }
+
+        return {
+            value: id,
+            displayValue: this.extractLookupDisplayValue(value) ?? id
+        };
+    }
+
+    private extractLookupId(value: unknown): string | undefined {
+        if (!value) {
+            return undefined;
+        }
+
+        if (typeof value === 'string') {
+            return value;
+        }
+
+        if (typeof value !== 'object') {
+            return undefined;
+        }
+
+        const lookupValue = value as Exclude<LookupLike, string | null | undefined>;
+
+        return lookupValue?.value ?? lookupValue?.Value ?? lookupValue?.id ?? lookupValue?.Id;
+    }
+
+    private extractLookupDisplayValue(value: unknown): string | undefined {
+        if (!value || typeof value !== 'object') {
+            return undefined;
+        }
+
+        const lookupValue = value as {
+            displayValue?: string;
+            DisplayValue?: string;
+            name?: string;
+            Name?: string;
+            shortName?: string;
+            ShortName?: string;
+        };
+
+        return lookupValue.displayValue
+            ?? lookupValue.DisplayValue
+            ?? lookupValue.name
+            ?? lookupValue.Name
+            ?? lookupValue.shortName
+            ?? lookupValue.ShortName;
     }
 }
 
@@ -417,6 +552,7 @@ export class OrderCurrencyByContractChangeHandler extends BaseRequestHandler<Han
     requestHandlers: [
         OrderMobileFieldsStateHandler,
         GlbCustomLoadDataRequestHandler,
+        OrderOwnersByAccountChangeHandler,
         OrderCurrencyByContractChangeHandler,
         OrderProductPriceFilterHandler,
         OrderProductCustomerProductPriceFilterHandler,
