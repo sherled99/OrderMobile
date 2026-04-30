@@ -53,6 +53,7 @@ Important attributes:
 - Order marketing owner: `OrderDS_UsrMarketingOwner_cp2l7yl`
 - Order sales owner: `OrderDS_UsrSalesOwner_a91fe07`
 - Order product lookup: `OrderProductDS_Product_hg2hy0q`
+- Order product unit: `OrderProductDS_Unit_4h3l9ww`
 - Customer product flag: `UsrCustomerProduct`
 - Product lookup business-rule filter attribute: `OrderProductDS_Product_hg2hy0q_List_BusinessRule_Filter`
 
@@ -119,6 +120,9 @@ Existing example:
   - `Order.UsrOurCompany = Contract.OurCompany`
   - `Order.UsrOurCompanyBillingInfo = Contract.SupplierBillingInfo`
 - Lookup values are normalized to `{ value, displayValue }` before setting.
+- When order product `Product` changes on `UsrOrderProductMobileEditPage`, `Unit` is selected with this priority:
+  - first `UsrAccountProduct.UsrUnit`, where `UsrAccount = Order.Account`, `UsrProduct = Product`, `RecordInactive = false`, and `UsrDefault = true`;
+  - fallback to `Product.Unit`.
 
 ## Lookup Filtering
 

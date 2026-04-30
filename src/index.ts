@@ -8,9 +8,11 @@ import {
     CrtRequestHandler,
     DataValueType,
     DoBootstrap,
+    FilterGroup,
     FilterType,
     HandleViewModelAttributeChangeRequest,
     LoadDataRequest,
+    LogicalOperatorType,
     Model,
     ModelParameterType,
     ParameterExpression,
@@ -31,6 +33,7 @@ const ORDER_OWNER_ATTRIBUTE = 'OrderDS_Owner_eifsnwo';
 const ORDER_MARKETING_OWNER_ATTRIBUTE = 'OrderDS_UsrMarketingOwner_cp2l7yl';
 const ORDER_SALES_OWNER_ATTRIBUTE = 'OrderDS_UsrSalesOwner_a91fe07';
 const ORDER_PRODUCT_PRODUCT_ATTRIBUTE = 'OrderProductDS_Product_hg2hy0q';
+const ORDER_PRODUCT_UNIT_ATTRIBUTE = 'OrderProductDS_Unit_4h3l9ww';
 const ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE =
     `${ORDER_PRODUCT_PRODUCT_ATTRIBUTE}_List_BusinessRule_Filter`;
 const ORDER_PRODUCT_CUSTOMER_PRODUCT_ATTRIBUTE = 'UsrCustomerProduct';
@@ -74,6 +77,11 @@ type ContractDefaultValues = {
     UsrAdditionalInvoiceCurrencyExchangeRate?: unknown;
     OurCompany?: unknown;
     SupplierBillingInfo?: unknown;
+};
+
+type UnitLoadResult = {
+    source: 'UsrAccountProduct' | 'Product' | 'none';
+    value: unknown;
 };
 
 async function applyOrderProductPriceFilter(
@@ -233,6 +241,218 @@ export class OrderProductCustomerProductPriceFilterHandler extends BaseRequestHa
         }
 
         return result;
+    }
+}
+
+@CrtRequestHandler({
+    requestType: 'crt.HandleViewModelAttributeChangeRequest',
+    type: 'glb.OrderProductUnitByProductChangeHandler',
+    scopes: [ORDER_PRODUCT_MOBILE_PAGE]
+})
+export class OrderProductUnitByProductChangeHandler extends BaseRequestHandler<HandleViewModelAttributeChangeRequest> {
+    private readonly orderAttributeCandidates = [
+        'OrderProductDS_Order',
+        'OrderProductDS_OrderId',
+        'OrderProductDS_Order_',
+        'Order',
+        'OrderId',
+        'MasterRecordId',
+        'masterRecordId',
+        'ParentRecordId',
+        'parentRecordId'
+    ];
+
+    public async handle(request: HandleViewModelAttributeChangeRequest): Promise<unknown> {
+        const result = await this.next?.handle(request);
+
+        if (request.attributeName !== ORDER_PRODUCT_PRODUCT_ATTRIBUTE) {
+            return result;
+        }
+
+        const productId = this.extractLookupId(request.value);
+        debugLog(`[UsrMobile] Order product Product change detected. productId=${productId ?? 'n/a'}`);
+
+        if (!productId) {
+            await request.$context.setAttribute(ORDER_PRODUCT_UNIT_ATTRIBUTE, null);
+            debugLog('[UsrMobile] Order product Unit cleared because Product is empty');
+            return result;
+        }
+
+        const accountId = await this.getOrderAccountId(request.$context);
+        const unitResult = await this.loadUnit(productId, accountId);
+        await request.$context.setAttribute(ORDER_PRODUCT_UNIT_ATTRIBUTE, this.normalizeLookupValue(unitResult.value));
+        debugLog(
+            `[UsrMobile] Order product Unit synced from Product change. ` +
+            `productId=${productId}, accountId=${accountId ?? 'n/a'}, ` +
+            `source=${unitResult.source}, unitId=${this.extractLookupId(unitResult.value) ?? 'n/a'}`
+        );
+
+        return result;
+    }
+
+    private async getOrderAccountId(context: BaseRequest['$context']): Promise<string | undefined> {
+        const accountValue = await getContextAttributeValue(context, ORDER_ACCOUNT_ATTRIBUTE);
+        const accountId = this.extractLookupId(accountValue);
+
+        if (accountId) {
+            return accountId;
+        }
+
+        const orderId = await this.getOrderId(context);
+
+        if (!orderId) {
+            debugLog('[UsrMobile] Order product Unit: order/account not found in detail context');
+            return undefined;
+        }
+
+        return this.loadAccountIdByOrderId(orderId);
+    }
+
+    private async getOrderId(context: BaseRequest['$context']): Promise<string | undefined> {
+        for (const attributeName of this.orderAttributeCandidates) {
+            const value = await getContextAttributeValue(context, attributeName);
+            const orderId = this.extractLookupId(value);
+
+            if (orderId) {
+                debugLog(
+                    `[UsrMobile] Order product Unit: orderId resolved from ${attributeName}. ` +
+                    `orderId=${orderId}`
+                );
+                return orderId;
+            }
+        }
+
+        return undefined;
+    }
+
+    private async loadAccountIdByOrderId(orderId: string): Promise<string | undefined> {
+        const orderModel = await Model.create('Order');
+        const orders = await orderModel.load({
+            attributes: [
+                { name: 'Account', path: 'Account' }
+            ],
+            parameters: [{
+                type: ModelParameterType.Filter,
+                value: new CompareFilter(
+                    ComparisonType.Equal,
+                    new ColumnExpression({ columnPath: 'Id' }),
+                    new ParameterExpression({ value: orderId })
+                )
+            }]
+        }) as Array<{ Account?: unknown }>;
+
+        return this.extractLookupId(orders?.[0]?.Account);
+    }
+
+    private async loadUnit(productId: string, accountId: string | undefined): Promise<UnitLoadResult> {
+        if (accountId) {
+            const accountProductUnit = await this.loadAccountProductUnit(productId, accountId);
+
+            if (this.extractLookupId(accountProductUnit)) {
+                return {
+                    source: 'UsrAccountProduct',
+                    value: accountProductUnit
+                };
+            }
+        }
+
+        return {
+            source: 'Product',
+            value: await this.loadProductUnit(productId)
+        };
+    }
+
+    private async loadAccountProductUnit(productId: string, accountId: string): Promise<unknown> {
+        const accountProductModel = await Model.create('UsrAccountProduct');
+        const filter = new FilterGroup(LogicalOperatorType.And);
+        filter.addSchemaColumnFilterWithParameter(ComparisonType.Equal, 'UsrAccount', accountId);
+        filter.addSchemaColumnFilterWithParameter(ComparisonType.Equal, 'UsrProduct', productId);
+        filter.addSchemaColumnFilterWithParameter(ComparisonType.Equal, 'RecordInactive', false);
+        filter.addSchemaColumnFilterWithParameter(ComparisonType.Equal, 'UsrDefault', true);
+
+        const accountProducts = await accountProductModel.load({
+            attributes: [
+                { name: 'UsrUnit', path: 'UsrUnit' }
+            ],
+            parameters: [{
+                type: ModelParameterType.Filter,
+                value: filter
+            }]
+        }) as Array<{ UsrUnit?: unknown }>;
+
+        return accountProducts?.[0]?.UsrUnit ?? null;
+    }
+
+    private async loadProductUnit(productId: string): Promise<unknown> {
+        const productModel = await Model.create('Product');
+        const products = await productModel.load({
+            attributes: [
+                { name: 'Unit', path: 'Unit' }
+            ],
+            parameters: [{
+                type: ModelParameterType.Filter,
+                value: new CompareFilter(
+                    ComparisonType.Equal,
+                    new ColumnExpression({ columnPath: 'Id' }),
+                    new ParameterExpression({ value: productId })
+                )
+            }]
+        }) as Array<{ Unit?: unknown }>;
+
+        return products?.[0]?.Unit ?? null;
+    }
+
+    private normalizeLookupValue(value: unknown): unknown {
+        const id = this.extractLookupId(value);
+
+        if (!id) {
+            return null;
+        }
+
+        return {
+            value: id,
+            displayValue: this.extractLookupDisplayValue(value) ?? id
+        };
+    }
+
+    private extractLookupId(value: unknown): string | undefined {
+        if (!value) {
+            return undefined;
+        }
+
+        if (typeof value === 'string') {
+            return value;
+        }
+
+        if (typeof value !== 'object') {
+            return undefined;
+        }
+
+        const lookupValue = value as Exclude<LookupLike, string | null | undefined>;
+
+        return lookupValue?.value ?? lookupValue?.Value ?? lookupValue?.id ?? lookupValue?.Id;
+    }
+
+    private extractLookupDisplayValue(value: unknown): string | undefined {
+        if (!value || typeof value !== 'object') {
+            return undefined;
+        }
+
+        const lookupValue = value as {
+            displayValue?: string;
+            DisplayValue?: string;
+            name?: string;
+            Name?: string;
+            shortName?: string;
+            ShortName?: string;
+        };
+
+        return lookupValue.displayValue
+            ?? lookupValue.DisplayValue
+            ?? lookupValue.name
+            ?? lookupValue.Name
+            ?? lookupValue.shortName
+            ?? lookupValue.ShortName;
     }
 }
 
@@ -579,6 +799,7 @@ export class OrderDefaultsByContractChangeHandler extends BaseRequestHandler<Han
         OrderDefaultsByContractChangeHandler,
         OrderProductPriceFilterHandler,
         OrderProductCustomerProductPriceFilterHandler,
+        OrderProductUnitByProductChangeHandler,
         OrderProductMobileFieldsStateHandler
     ]
 })
