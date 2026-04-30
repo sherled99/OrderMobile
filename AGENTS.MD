@@ -45,6 +45,10 @@ Important attributes:
 - Order account: `OrderDS_Account_5ohaihw`
 - Order contract: `OrderDS_UsrContract_k0jq8wn`
 - Order currency: `OrderDS_Currency_bpgbf8n`
+- Order additional invoice currency: `OrderDS_UsrAdditionalInvoiceCurrency_8tw6te5`
+- Order additional invoice currency exchange rate: `OrderDS_UsrAdditionalInvoiceCurrencyExchangeRate_4iea63x`
+- Order our company: `OrderDS_UsrOurCompany_ni182th`
+- Order our company billing info: `OrderDS_UsrOurCompanyBillingInfo_pgqmvua`
 - Order owner: `OrderDS_Owner_eifsnwo`
 - Order marketing owner: `OrderDS_UsrMarketingOwner_cp2l7yl`
 - Order sales owner: `OrderDS_UsrSalesOwner_a91fe07`
@@ -108,8 +112,13 @@ Existing example:
   - `Order.Owner = Account.Owner`
   - `Order.UsrMarketingOwner = Account.UsrMarketingOwner`
   - `Order.UsrSalesOwner = Account.UsrSalesOwner`
-- When order contract changes, currency is loaded through `Contract -> UsrPricelist.UsrProductCurrency`.
-- Currency is normalized to `{ value, displayValue }` before setting.
+- When order contract changes, defaults are loaded from `Contract`:
+  - `Order.Currency = Contract.UsrPricelist.UsrProductCurrency`
+  - `Order.UsrAdditionalInvoiceCurrency = Contract.UsrAdditionalInvoiceCurrency`
+  - `Order.UsrAdditionalInvoiceCurrencyExchangeRate = Contract.UsrAdditionalInvoiceCurrencyExchangeRate`
+  - `Order.UsrOurCompany = Contract.OurCompany`
+  - `Order.UsrOurCompanyBillingInfo = Contract.SupplierBillingInfo`
+- Lookup values are normalized to `{ value, displayValue }` before setting.
 
 ## Lookup Filtering
 

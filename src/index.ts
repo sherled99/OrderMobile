@@ -22,6 +22,11 @@ const ORDER_PRODUCT_MOBILE_PAGE = 'UsrOrderProductMobileEditPage';
 const ORDER_ACCOUNT_ATTRIBUTE = 'OrderDS_Account_5ohaihw';
 const ORDER_CONTRACT_ATTRIBUTE = 'OrderDS_UsrContract_k0jq8wn';
 const ORDER_CURRENCY_ATTRIBUTE = 'OrderDS_Currency_bpgbf8n';
+const ORDER_ADDITIONAL_INVOICE_CURRENCY_ATTRIBUTE = 'OrderDS_UsrAdditionalInvoiceCurrency_8tw6te5';
+const ORDER_ADDITIONAL_INVOICE_CURRENCY_EXCHANGE_RATE_ATTRIBUTE =
+    'OrderDS_UsrAdditionalInvoiceCurrencyExchangeRate_4iea63x';
+const ORDER_OUR_COMPANY_ATTRIBUTE = 'OrderDS_UsrOurCompany_ni182th';
+const ORDER_OUR_COMPANY_BILLING_INFO_ATTRIBUTE = 'OrderDS_UsrOurCompanyBillingInfo_pgqmvua';
 const ORDER_OWNER_ATTRIBUTE = 'OrderDS_Owner_eifsnwo';
 const ORDER_MARKETING_OWNER_ATTRIBUTE = 'OrderDS_UsrMarketingOwner_cp2l7yl';
 const ORDER_SALES_OWNER_ATTRIBUTE = 'OrderDS_UsrSalesOwner_a91fe07';
@@ -60,6 +65,15 @@ type AccountOwnerValues = {
     Owner?: unknown;
     UsrMarketingOwner?: unknown;
     UsrSalesOwner?: unknown;
+};
+
+type ContractDefaultValues = {
+    UsrPricelist?: unknown;
+    UsrProductCurrency?: unknown;
+    UsrAdditionalInvoiceCurrency?: unknown;
+    UsrAdditionalInvoiceCurrencyExchangeRate?: unknown;
+    OurCompany?: unknown;
+    SupplierBillingInfo?: unknown;
 };
 
 async function applyOrderProductPriceFilter(
@@ -368,10 +382,10 @@ export class OrderOwnersByAccountChangeHandler extends BaseRequestHandler<Handle
 
 @CrtRequestHandler({
     requestType: 'crt.HandleViewModelAttributeChangeRequest',
-    type: 'glb.OrderCurrencyByContractChangeHandler',
+    type: 'glb.OrderDefaultsByContractChangeHandler',
     scopes: [ORDER_MOBILE_PAGE]
 })
-export class OrderCurrencyByContractChangeHandler extends BaseRequestHandler<HandleViewModelAttributeChangeRequest> {
+export class OrderDefaultsByContractChangeHandler extends BaseRequestHandler<HandleViewModelAttributeChangeRequest> {
     public async handle(request: HandleViewModelAttributeChangeRequest): Promise<unknown> {
         const result = await this.next?.handle(request);
 
@@ -390,36 +404,42 @@ export class OrderCurrencyByContractChangeHandler extends BaseRequestHandler<Han
         debugLog(`[UsrMobile] Extracted contractId=${contractId ?? 'n/a'} from request.value`);
 
         if (!contractId) {
-            await request.$context.setAttribute(ORDER_CURRENCY_ATTRIBUTE, null);
-            debugLog('[UsrMobile] Currency cleared because contract is empty');
+            await this.setContractDefaultFields(request, {});
+            debugLog('[UsrMobile] Contract default fields cleared because contract is empty');
             return result;
         }
 
-        const currencyValue = await this.loadCurrencyByContractId(contractId);
+        const contractValues = await this.loadContractDefaultValuesByContractId(contractId);
+        const currencyValue = this.getCurrencyValue(contractValues);
+        await this.setContractDefaultFields(request, contractValues, currencyValue);
         debugLog(
-            `[UsrMobile] Currency value loaded from contract. raw=${this.stringifyValue(currencyValue)}, ` +
-            `currencyId=${this.extractLookupId(currencyValue) ?? 'n/a'}`
-        );
-
-        await request.$context.setAttribute(ORDER_CURRENCY_ATTRIBUTE, currencyValue ?? null);
-        const updatedCurrencyValue = await this.getContextAttributeValue(request.$context, ORDER_CURRENCY_ATTRIBUTE);
-        debugLog(
-            `[UsrMobile] Currency synced from contract change. ` +
+            `[UsrMobile] Contract default fields synced from contract change. ` +
             `contractId=${contractId}, ` +
             `currencyId=${this.extractLookupId(currencyValue) ?? 'n/a'}, ` +
-            `contextValue=${this.stringifyValue(updatedCurrencyValue)}, ` +
-            `contextCurrencyId=${this.extractLookupId(updatedCurrencyValue) ?? 'n/a'}`
+            `additionalInvoiceCurrencyId=` +
+            `${this.extractLookupId(contractValues.UsrAdditionalInvoiceCurrency) ?? 'n/a'}, ` +
+            `additionalInvoiceCurrencyExchangeRate=` +
+            `${this.stringifyValue(contractValues.UsrAdditionalInvoiceCurrencyExchangeRate ?? null)}, ` +
+            `ourCompanyId=${this.extractLookupId(contractValues.OurCompany) ?? 'n/a'}, ` +
+            `ourCompanyBillingInfoId=${this.extractLookupId(contractValues.SupplierBillingInfo) ?? 'n/a'}`
         );
 
         return result;
     }
 
-    private async loadCurrencyByContractId(contractId: string): Promise<unknown> {
+    private async loadContractDefaultValuesByContractId(contractId: string): Promise<ContractDefaultValues> {
         const contractModel = await Model.create('Contract');
         const contracts = await contractModel.load({
             attributes: [
                 { name: 'UsrPricelist', path: 'UsrPricelist' },
-                { name: 'UsrProductCurrency', path: 'UsrPricelist.UsrProductCurrency' }
+                { name: 'UsrProductCurrency', path: 'UsrPricelist.UsrProductCurrency' },
+                { name: 'UsrAdditionalInvoiceCurrency', path: 'UsrAdditionalInvoiceCurrency' },
+                {
+                    name: 'UsrAdditionalInvoiceCurrencyExchangeRate',
+                    path: 'UsrAdditionalInvoiceCurrencyExchangeRate'
+                },
+                { name: 'OurCompany', path: 'OurCompany' },
+                { name: 'SupplierBillingInfo', path: 'SupplierBillingInfo' }
             ],
             parameters: [{
                 type: ModelParameterType.Filter,
@@ -429,7 +449,7 @@ export class OrderCurrencyByContractChangeHandler extends BaseRequestHandler<Han
                     new ParameterExpression({ value: contractId })
                 )
             }]
-        }) as Array<{ UsrPricelist?: unknown; UsrProductCurrency?: unknown }>;
+        }) as ContractDefaultValues[];
 
         debugLog(
             `[UsrMobile] Contract load result. ` +
@@ -437,39 +457,42 @@ export class OrderCurrencyByContractChangeHandler extends BaseRequestHandler<Han
             `firstRow=${this.stringifyValue(contracts?.[0] ?? null)}`
         );
 
-        const firstRow = contracts?.[0] as { UsrPricelist?: unknown; UsrProductCurrency?: unknown } | undefined;
-        const rawCurrencyValue =
-            this.getNestedLookupValue(firstRow?.UsrPricelist, 'UsrProductCurrency') ??
-            firstRow?.UsrProductCurrency ??
-            null;
-
-        const normalizedCurrencyValue = this.normalizeLookupValue(rawCurrencyValue);
-        debugLog(
-            `[UsrMobile] Normalized currency value. ` +
-            `raw=${this.stringifyValue(rawCurrencyValue)}, ` +
-            `normalized=${this.stringifyValue(normalizedCurrencyValue)}`
-        );
-
-        return normalizedCurrencyValue;
+        return contracts?.[0] ?? {};
     }
 
-    private async getContextAttributeValue(
-        context: BaseRequest['$context'],
-        attributeName: string
-    ): Promise<unknown> {
-        try {
-            if (typeof context.getAttribute === 'function') {
-                return await context.getAttribute(attributeName);
-            }
-        } catch {
-            // Ignore getAttribute failures and try direct access.
-        }
+    private async setContractDefaultFields(
+        request: HandleViewModelAttributeChangeRequest,
+        contractValues: ContractDefaultValues,
+        currencyValue: unknown = this.getCurrencyValue(contractValues)
+    ): Promise<void> {
+        await request.$context.setAttribute(
+            ORDER_CURRENCY_ATTRIBUTE,
+            this.normalizeLookupValue(currencyValue)
+        );
+        await request.$context.setAttribute(
+            ORDER_ADDITIONAL_INVOICE_CURRENCY_ATTRIBUTE,
+            this.normalizeLookupValue(contractValues.UsrAdditionalInvoiceCurrency)
+        );
+        await request.$context.setAttribute(
+            ORDER_ADDITIONAL_INVOICE_CURRENCY_EXCHANGE_RATE_ATTRIBUTE,
+            contractValues.UsrAdditionalInvoiceCurrencyExchangeRate ?? null
+        );
+        await request.$context.setAttribute(
+            ORDER_OUR_COMPANY_ATTRIBUTE,
+            this.normalizeLookupValue(contractValues.OurCompany)
+        );
+        await request.$context.setAttribute(
+            ORDER_OUR_COMPANY_BILLING_INFO_ATTRIBUTE,
+            this.normalizeLookupValue(contractValues.SupplierBillingInfo)
+        );
+    }
 
-        try {
-            return await context[attributeName];
-        } catch {
-            return undefined;
-        }
+    private getCurrencyValue(contractValues: ContractDefaultValues): unknown {
+        return (
+            this.getNestedLookupValue(contractValues.UsrPricelist, 'UsrProductCurrency') ??
+            contractValues.UsrProductCurrency ??
+            null
+        );
     }
 
     private extractLookupId(value: unknown): string | undefined {
@@ -553,7 +576,7 @@ export class OrderCurrencyByContractChangeHandler extends BaseRequestHandler<Han
         OrderMobileFieldsStateHandler,
         GlbCustomLoadDataRequestHandler,
         OrderOwnersByAccountChangeHandler,
-        OrderCurrencyByContractChangeHandler,
+        OrderDefaultsByContractChangeHandler,
         OrderProductPriceFilterHandler,
         OrderProductCustomerProductPriceFilterHandler,
         OrderProductMobileFieldsStateHandler
