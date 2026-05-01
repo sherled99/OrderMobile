@@ -34,6 +34,7 @@ const ORDER_MARKETING_OWNER_ATTRIBUTE = 'OrderDS_UsrMarketingOwner_cp2l7yl';
 const ORDER_SALES_OWNER_ATTRIBUTE = 'OrderDS_UsrSalesOwner_a91fe07';
 const ORDER_PRODUCT_PRODUCT_ATTRIBUTE = 'OrderProductDS_Product_hg2hy0q';
 const ORDER_PRODUCT_UNIT_ATTRIBUTE = 'OrderProductDS_Unit_4h3l9ww';
+const ORDER_PRODUCT_ORDER_ATTRIBUTE = 'OrderProductDS_Order';
 const ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE =
     `${ORDER_PRODUCT_PRODUCT_ATTRIBUTE}_List_BusinessRule_Filter`;
 const ORDER_PRODUCT_CUSTOMER_PRODUCT_ATTRIBUTE = 'UsrCustomerProduct';
@@ -250,18 +251,6 @@ export class OrderProductCustomerProductPriceFilterHandler extends BaseRequestHa
     scopes: [ORDER_PRODUCT_MOBILE_PAGE]
 })
 export class OrderProductUnitByProductChangeHandler extends BaseRequestHandler<HandleViewModelAttributeChangeRequest> {
-    private readonly orderAttributeCandidates = [
-        'OrderProductDS_Order',
-        'OrderProductDS_OrderId',
-        'OrderProductDS_Order_',
-        'Order',
-        'OrderId',
-        'MasterRecordId',
-        'masterRecordId',
-        'ParentRecordId',
-        'parentRecordId'
-    ];
-
     public async handle(request: HandleViewModelAttributeChangeRequest): Promise<unknown> {
         const result = await this.next?.handle(request);
 
@@ -291,17 +280,10 @@ export class OrderProductUnitByProductChangeHandler extends BaseRequestHandler<H
     }
 
     private async getOrderAccountId(context: BaseRequest['$context']): Promise<string | undefined> {
-        const accountValue = await getContextAttributeValue(context, ORDER_ACCOUNT_ATTRIBUTE);
-        const accountId = this.extractLookupId(accountValue);
-
-        if (accountId) {
-            return accountId;
-        }
-
         const orderId = await this.getOrderId(context);
 
         if (!orderId) {
-            debugLog('[UsrMobile] Order product Unit: order/account not found in detail context');
+            debugLog(`[UsrMobile] Order product Unit: ${ORDER_PRODUCT_ORDER_ATTRIBUTE} not found in detail context`);
             return undefined;
         }
 
@@ -309,20 +291,17 @@ export class OrderProductUnitByProductChangeHandler extends BaseRequestHandler<H
     }
 
     private async getOrderId(context: BaseRequest['$context']): Promise<string | undefined> {
-        for (const attributeName of this.orderAttributeCandidates) {
-            const value = await getContextAttributeValue(context, attributeName);
-            const orderId = this.extractLookupId(value);
+        const value = await getContextAttributeValue(context, ORDER_PRODUCT_ORDER_ATTRIBUTE);
+        const orderId = this.extractLookupId(value);
 
-            if (orderId) {
-                debugLog(
-                    `[UsrMobile] Order product Unit: orderId resolved from ${attributeName}. ` +
-                    `orderId=${orderId}`
-                );
-                return orderId;
-            }
+        if (orderId) {
+            debugLog(
+                `[UsrMobile] Order product Unit: orderId resolved from ${ORDER_PRODUCT_ORDER_ATTRIBUTE}. ` +
+                `orderId=${orderId}`
+            );
         }
 
-        return undefined;
+        return orderId;
     }
 
     private async loadAccountIdByOrderId(orderId: string): Promise<string | undefined> {
