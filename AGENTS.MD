@@ -54,6 +54,7 @@ Important attributes:
 - Order sales owner: `OrderDS_UsrSalesOwner_a91fe07`
 - Order product lookup: `OrderProductDS_Product_hg2hy0q`
 - Order product unit: `OrderProductDS_Unit_4h3l9ww`
+- Order product parent order: `OrderProductDS_Order`
 - Customer product flag: `UsrCustomerProduct`
 - Product lookup business-rule filter attribute: `OrderProductDS_Product_hg2hy0q_List_BusinessRule_Filter`
 
@@ -121,8 +122,44 @@ Existing example:
   - `Order.UsrOurCompanyBillingInfo = Contract.SupplierBillingInfo`
 - Lookup values are normalized to `{ value, displayValue }` before setting.
 - When order product `Product` changes on `UsrOrderProductMobileEditPage`, `Unit` is selected with this priority:
+  - resolve `Order` from `OrderProductDS_Order`, then load `Order.Account`;
   - first `UsrAccountProduct.UsrUnit`, where `UsrAccount = Order.Account`, `UsrProduct = Product`, `RecordInactive = false`, and `UsrDefault = true`;
   - fallback to `Product.Unit`.
+
+## Custom Button Requests
+
+The order page has a custom button request:
+
+```json
+"clicked": {
+    "request": "SaveOrderAndCreateOrderProduct"
+}
+```
+
+Important: call the request name `SaveOrderAndCreateOrderProduct`, not the handler type name.
+
+Current behavior:
+
+- Handler: `SaveOrderAndCreateOrderProductHandler`.
+- Scope: `UsrOrderMobileEditPage`.
+- First runs `crt.SaveRecordRequest` for the current order via `HandlerChainService.instance.process(...)`.
+- If save fails, it stops and returns the save result.
+- After successful save, reads current order id from context attribute `Id`.
+- Then runs `crt.CreateRecordRequest` with:
+
+```json
+{
+    "entityName": "OrderProduct",
+    "defaultValues": [
+        {
+            "attributeName": "Order",
+            "value": "<current Order.Id>"
+        }
+    ]
+}
+```
+
+Use the actual resolved `Order.Id` in code, not the declarative string `"$Id"`.
 
 ## Lookup Filtering
 

@@ -10,6 +10,7 @@ import {
     DoBootstrap,
     FilterGroup,
     FilterType,
+    HandlerChainService,
     HandleViewModelAttributeChangeRequest,
     LoadDataRequest,
     LogicalOperatorType,
@@ -21,6 +22,8 @@ import {
 
 const ORDER_MOBILE_PAGE = 'UsrOrderMobileEditPage';
 const ORDER_PRODUCT_MOBILE_PAGE = 'UsrOrderProductMobileEditPage';
+const SAVE_ORDER_AND_CREATE_ORDER_PRODUCT_REQUEST = 'SaveOrderAndCreateOrderProduct';
+const ORDER_ID_ATTRIBUTE = 'Id';
 const ORDER_ACCOUNT_ATTRIBUTE = 'OrderDS_Account_5ohaihw';
 const ORDER_CONTRACT_ATTRIBUTE = 'OrderDS_UsrContract_k0jq8wn';
 const ORDER_CURRENCY_ATTRIBUTE = 'OrderDS_Currency_bpgbf8n';
@@ -455,6 +458,99 @@ export class GlbCustomLoadDataRequestHandler extends BaseRequestHandler {
 }
 
 @CrtRequestHandler({
+    requestType: SAVE_ORDER_AND_CREATE_ORDER_PRODUCT_REQUEST,
+    type: 'glb.SaveOrderAndCreateOrderProductHandler',
+    scopes: [ORDER_MOBILE_PAGE]
+})
+export class SaveOrderAndCreateOrderProductHandler extends BaseRequestHandler<BaseRequest> {
+    public async handle(request: BaseRequest): Promise<unknown> {
+        debugLog('[UsrMobile] SaveOrderAndCreateOrderProduct started');
+
+        const saveResult = await HandlerChainService.instance.process({
+            type: 'crt.SaveRecordRequest',
+            $context: request.$context,
+            scopes: [ORDER_MOBILE_PAGE]
+        } as BaseRequest);
+
+        if (this.isFailedSaveResult(saveResult)) {
+            debugLog(
+                `[UsrMobile] SaveOrderAndCreateOrderProduct stopped because save failed. ` +
+                `result=${this.stringifyValue(saveResult)}`
+            );
+            return saveResult;
+        }
+
+        const orderId = this.extractLookupId(await getContextAttributeValue(request.$context, ORDER_ID_ATTRIBUTE));
+
+        if (!orderId) {
+            debugLog('[UsrMobile] SaveOrderAndCreateOrderProduct stopped because Order Id was not resolved');
+            return saveResult;
+        }
+
+        debugLog(`[UsrMobile] Order saved. Opening OrderProduct create page. orderId=${orderId}`);
+
+        return HandlerChainService.instance.process({
+            type: 'crt.CreateRecordRequest',
+            $context: request.$context,
+            scopes: [ORDER_MOBILE_PAGE],
+            entityName: 'OrderProduct',
+            defaultValues: [{
+                attributeName: 'Order',
+                value: orderId
+            }]
+        } as BaseRequest & {
+            entityName: string;
+            defaultValues: Array<{
+                attributeName: string;
+                value: unknown;
+            }>;
+        });
+    }
+
+    private isFailedSaveResult(result: unknown): boolean {
+        if (result === false) {
+            return true;
+        }
+
+        if (!result || typeof result !== 'object' || !('success' in result)) {
+            return false;
+        }
+
+        return (result as { success?: boolean }).success === false;
+    }
+
+    private extractLookupId(value: unknown): string | undefined {
+        if (!value) {
+            return undefined;
+        }
+
+        if (typeof value === 'string') {
+            return value;
+        }
+
+        if (typeof value !== 'object') {
+            return undefined;
+        }
+
+        const lookupValue = value as Exclude<LookupLike, string | null | undefined>;
+
+        return lookupValue?.value ?? lookupValue?.Value ?? lookupValue?.id ?? lookupValue?.Id;
+    }
+
+    private stringifyValue(value: unknown): string {
+        try {
+            if (typeof value === 'string') {
+                return value;
+            }
+
+            return JSON.stringify(value);
+        } catch {
+            return String(value);
+        }
+    }
+}
+
+@CrtRequestHandler({
     requestType: 'crt.HandleViewModelAttributeChangeRequest',
     type: 'glb.OrderOwnersByAccountChangeHandler',
     scopes: [ORDER_MOBILE_PAGE]
@@ -774,6 +870,7 @@ export class OrderDefaultsByContractChangeHandler extends BaseRequestHandler<Han
     requestHandlers: [
         OrderMobileFieldsStateHandler,
         GlbCustomLoadDataRequestHandler,
+        SaveOrderAndCreateOrderProductHandler,
         OrderOwnersByAccountChangeHandler,
         OrderDefaultsByContractChangeHandler,
         OrderProductPriceFilterHandler,
