@@ -41,11 +41,12 @@ const ORDER_PRODUCT_ORDER_ATTRIBUTE = 'OrderProductDS_Order';
 const ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE =
     `${ORDER_PRODUCT_PRODUCT_ATTRIBUTE}_List_BusinessRule_Filter`;
 const ORDER_PRODUCT_CUSTOMER_PRODUCT_ATTRIBUTE = 'UsrCustomerProduct';
-const ORDER_PRODUCT_PRICE_FILTER_KEY = '4fa2fdd6-87be-4f71-9b1d-0fda6b694c7d';
+const ORDER_PRODUCT_LOOKUP_FILTER_KEY = '4fa2fdd6-87be-4f71-9b1d-0fda6b694c7d';
+const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
 const debugLog = (...args: unknown[]): void => {
     (globalThis as { console?: { log: (...items: unknown[]) => void } }).console?.log(...args);
 };
-let orderProductLastAppliedPriceComparisonType: ComparisonType | undefined;
+let orderProductLastAppliedLookupFilterStateKey: string | undefined;
 
 type LookupLike =
     | string
@@ -58,14 +59,21 @@ type LookupLike =
     | null
     | undefined;
 
-type ProductPriceFilter = {
+type ProductLookupFilter = {
+    [key: string]: unknown;
     key?: string;
-    comparisonType?: ComparisonType;
-    rightExpression?: {
-        parameter?: {
-            value?: unknown;
-        };
-    };
+    stateKey?: string;
+};
+
+type FilterItems = Record<string, unknown>;
+
+type OrderProductLookupFilterValues = {
+    customerProduct: boolean;
+    orderId?: string;
+    accountId?: string;
+    contractId?: string;
+    pricelistId?: string;
+    orderTypeId?: string;
 };
 
 type AccountOwnerValues = {
@@ -88,68 +96,269 @@ type UnitLoadResult = {
     value: unknown;
 };
 
-async function applyOrderProductPriceFilter(
+async function applyOrderProductLookupFilter(
     context: BaseRequest['$context'],
     customerProductValue?: unknown
 ): Promise<void> {
     const resolvedCustomerProductValue = customerProductValue === undefined
         ? await getContextAttributeValue(context, ORDER_PRODUCT_CUSTOMER_PRODUCT_ATTRIBUTE)
         : customerProductValue;
-    const customerProduct = toBoolean(resolvedCustomerProductValue);
-    const comparisonType = customerProduct ? ComparisonType.Greater : ComparisonType.Equal;
+    const filterValues = await loadOrderProductLookupFilterValues(
+        context,
+        toBoolean(resolvedCustomerProductValue)
+    );
+    const stateKey = createOrderProductLookupFilterStateKey(filterValues);
     const currentFilter = await getContextAttributeValue(
         context,
         ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE
-    ) as ProductPriceFilter | undefined;
+    ) as ProductLookupFilter | undefined;
 
     if (
-        isSameProductPriceFilter(currentFilter, comparisonType) ||
-        orderProductLastAppliedPriceComparisonType === comparisonType
+        isSameOrderProductLookupFilter(currentFilter, stateKey) ||
+        orderProductLastAppliedLookupFilterStateKey === stateKey
     ) {
         return;
     }
 
-    orderProductLastAppliedPriceComparisonType = comparisonType;
+    orderProductLastAppliedLookupFilterStateKey = stateKey;
     await context.setAttribute(
         ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE,
-        createProductPriceFilter(comparisonType)
+        createOrderProductLookupFilter(filterValues, stateKey)
     );
     debugLog(
         `[UsrMobile] Product lookup business rule filter applied. ` +
         `attribute=${ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE}, ` +
-        `customerProduct=${customerProduct}, condition=Price ${customerProduct ? '>' : '='} 0`
+        `customerProduct=${filterValues.customerProduct}, orderId=${filterValues.orderId ?? 'n/a'}, ` +
+        `accountId=${filterValues.accountId ?? 'n/a'}, ` +
+        `pricelistId=${filterValues.pricelistId ?? 'n/a'}, ` +
+        `orderTypeId=${filterValues.orderTypeId ?? 'n/a'}`
     );
 }
 
-function createProductPriceFilter(comparisonType: ComparisonType): ProductPriceFilter {
+async function loadOrderProductLookupFilterValues(
+    context: BaseRequest['$context'],
+    customerProduct: boolean
+): Promise<OrderProductLookupFilterValues> {
+    const orderId = extractLookupId(await getContextAttributeValue(context, ORDER_PRODUCT_ORDER_ATTRIBUTE));
+
+    if (!orderId) {
+        return { customerProduct };
+    }
+
+    const orderModel = await Model.create('Order');
+    const orders = await orderModel.load({
+        attributes: [
+            { name: 'Account', path: 'Account' },
+            { name: 'UsrContract', path: 'UsrContract' },
+            { name: 'UsrType', path: 'UsrType' }
+        ],
+        parameters: [{
+            type: ModelParameterType.Filter,
+            value: new CompareFilter(
+                ComparisonType.Equal,
+                new ColumnExpression({ columnPath: 'Id' }),
+                new ParameterExpression({ value: orderId })
+            )
+        }]
+    }) as Array<{
+        Account?: unknown;
+        UsrContract?: unknown;
+        UsrType?: unknown;
+    }>;
+
+    const order = orders?.[0] ?? {};
+    const contractId = extractLookupId(order.UsrContract);
+    const pricelistId = contractId
+        ? await loadPricelistIdByContractId(contractId)
+        : undefined;
+
+    debugLog(
+        `[UsrMobile] Product lookup filter order values loaded. ` +
+        `orderId=${orderId}, accountId=${extractLookupId(order.Account) ?? 'n/a'}, ` +
+        `contractId=${contractId ?? 'n/a'}, pricelistId=${pricelistId ?? 'n/a'}, ` +
+        `orderTypeId=${extractLookupId(order.UsrType) ?? 'n/a'}`
+    );
+
     return {
-        filterType: FilterType.Compare,
-        comparisonType,
+        customerProduct,
+        orderId,
+        accountId: extractLookupId(order.Account),
+        contractId,
+        pricelistId,
+        orderTypeId: extractLookupId(order.UsrType)
+    };
+}
+
+async function loadPricelistIdByContractId(contractId: string): Promise<string | undefined> {
+    const contractModel = await Model.create('Contract');
+    const contracts = await contractModel.load({
+        attributes: [
+            { name: 'UsrPricelist', path: 'UsrPricelist' }
+        ],
+        parameters: [{
+            type: ModelParameterType.Filter,
+            value: new CompareFilter(
+                ComparisonType.Equal,
+                new ColumnExpression({ columnPath: 'Id' }),
+                new ParameterExpression({ value: contractId })
+            )
+        }]
+    }) as Array<{
+        UsrPricelist?: unknown;
+    }>;
+
+    return extractLookupId(contracts?.[0]?.UsrPricelist);
+}
+
+function createOrderProductLookupFilter(
+    values: OrderProductLookupFilterValues,
+    stateKey: string
+): ProductLookupFilter {
+    if (!values.orderTypeId || (values.customerProduct && !values.pricelistId)) {
+        return createImpossibleProductFilter(stateKey);
+    }
+
+    const rootItems: FilterItems = {
+        orderTypeCategory: createOrderTypeProductCategoryExistsFilter(values.orderTypeId)
+    };
+
+    if (values.customerProduct) {
+        rootItems.productPrice = createProductPriceExistsFilter(values.pricelistId as string);
+        rootItems.accountProductOrCategory = createAccountProductOrCategoryFilter(values.accountId);
+    }
+
+    return createFilterGroup(LogicalOperatorType.And, rootItems, stateKey);
+}
+
+function createAccountProductOrCategoryFilter(accountId: string | undefined): ProductLookupFilter {
+    const items: FilterItems = {
+        categoryWithoutAccountProduct: createCompareFilter(
+            'Category.UsrUseAccountProduct',
+            false,
+            DataValueType.Boolean
+        )
+    };
+
+    if (accountId) {
+        items.accountProduct = createAccountProductExistsFilter(accountId);
+    }
+
+    return createFilterGroup(LogicalOperatorType.Or, items);
+}
+
+function createAccountProductExistsFilter(accountId: string): ProductLookupFilter {
+    return createExistsFilter(
+        '[UsrAccountProduct:UsrProduct].Id',
+        createFilterGroup(LogicalOperatorType.And, {
+            account: createCompareFilter('UsrAccount', accountId, DataValueType.Guid),
+            active: createCompareFilter('RecordInactive', false, DataValueType.Boolean)
+        })
+    );
+}
+
+function createProductPriceExistsFilter(pricelistId: string): ProductLookupFilter {
+    return createExistsFilter(
+        '[ProductPrice:Product].Id',
+        createFilterGroup(LogicalOperatorType.And, {
+            pricelist: createCompareFilter('PriceList', pricelistId, DataValueType.Guid)
+        })
+    );
+}
+
+function createOrderTypeProductCategoryExistsFilter(orderTypeId: string): ProductLookupFilter {
+    return createExistsFilter(
+        '[UsrOrderTypeProductCategory:UsrProductCategory:Category].Id',
+        createFilterGroup(LogicalOperatorType.And, {
+            orderType: createCompareFilter('UsrOrderType', orderTypeId, DataValueType.Guid)
+        })
+    );
+}
+
+function createImpossibleProductFilter(stateKey: string): ProductLookupFilter {
+    return createFilterGroup(LogicalOperatorType.And, {
+        impossibleProduct: createCompareFilter('Id', EMPTY_GUID, DataValueType.Guid)
+    }, stateKey);
+}
+
+function createFilterGroup(
+    logicalOperation: LogicalOperatorType,
+    items: FilterItems,
+    stateKey?: string
+): ProductLookupFilter {
+    return {
+        filterType: FilterType.FilterGroup,
         isEnabled: true,
         trimDateTimeParameterToDate: false,
-        leftExpression: {
-            expressionType: 0,
-            columnPath: 'Price'
-        },
+        logicalOperation,
+        items,
+        ...(stateKey ? {
+            key: ORDER_PRODUCT_LOOKUP_FILTER_KEY,
+            stateKey
+        } : {})
+    };
+}
+
+function createExistsFilter(columnPath: string, subFilters: ProductLookupFilter): ProductLookupFilter {
+    return {
+        filterType: FilterType.Exists,
+        comparisonType: ComparisonType.Exists,
+        isEnabled: true,
+        trimDateTimeParameterToDate: false,
+        leftExpression: createColumnExpression(columnPath),
+        subFilters,
+        isAggregative: true
+    };
+}
+
+function createCompareFilter(
+    columnPath: string,
+    value: unknown,
+    dataValueType: DataValueType
+): ProductLookupFilter {
+    return {
+        filterType: FilterType.Compare,
+        comparisonType: ComparisonType.Equal,
+        isEnabled: true,
+        trimDateTimeParameterToDate: false,
+        leftExpression: createColumnExpression(columnPath),
         rightExpression: {
             expressionType: 2,
             parameter: {
-                dataValueType: DataValueType.Money,
-                value: 0
+                dataValueType,
+                value
             }
         },
-        isAggregative: false,
-        key: ORDER_PRODUCT_PRICE_FILTER_KEY
-    } as ProductPriceFilter;
+        isAggregative: false
+    };
 }
 
-function isSameProductPriceFilter(
-    filter: ProductPriceFilter | undefined,
-    comparisonType: ComparisonType
+function createColumnExpression(columnPath: string): {
+    expressionType: number;
+    columnPath: string;
+} {
+    return {
+        expressionType: 0,
+        columnPath
+    };
+}
+
+function createOrderProductLookupFilterStateKey(values: OrderProductLookupFilterValues): string {
+    return JSON.stringify({
+        customerProduct: values.customerProduct,
+        orderId: values.orderId ?? null,
+        accountId: values.accountId ?? null,
+        contractId: values.contractId ?? null,
+        pricelistId: values.pricelistId ?? null,
+        orderTypeId: values.orderTypeId ?? null
+    });
+}
+
+function isSameOrderProductLookupFilter(
+    filter: ProductLookupFilter | undefined,
+    stateKey: string
 ): boolean {
-    return filter?.key === ORDER_PRODUCT_PRICE_FILTER_KEY
-        && Number(filter.comparisonType) === comparisonType
-        && Number(filter.rightExpression?.parameter?.value) === 0;
+    return filter?.key === ORDER_PRODUCT_LOOKUP_FILTER_KEY
+        && filter.stateKey === stateKey;
 }
 
 async function getContextAttributeValue(
@@ -176,6 +385,24 @@ async function getContextAttributeValue(
 
 function toBoolean(value: unknown): boolean {
     return value === true || value === 'true' || value === 1;
+}
+
+function extractLookupId(value: unknown): string | undefined {
+    if (!value) {
+        return undefined;
+    }
+
+    if (typeof value === 'string') {
+        return value;
+    }
+
+    if (typeof value !== 'object') {
+        return undefined;
+    }
+
+    const lookupValue = value as Exclude<LookupLike, string | null | undefined>;
+
+    return lookupValue?.value ?? lookupValue?.Value ?? lookupValue?.id ?? lookupValue?.Id;
 }
 
 @CrtRequestHandler({
@@ -220,28 +447,31 @@ export class OrderProductMobileFieldsStateHandler extends BaseRequestHandler<Loa
 
 @CrtRequestHandler({
     requestType: 'crt.LoadDataRequest',
-    type: 'glb.OrderProductPriceFilterHandler',
+    type: 'glb.OrderProductLookupFilterHandler',
     scopes: [ORDER_PRODUCT_MOBILE_PAGE]
 })
-export class OrderProductPriceFilterHandler extends BaseRequestHandler<LoadDataRequest> {
+export class OrderProductLookupFilterHandler extends BaseRequestHandler<LoadDataRequest> {
     public async handle(request: LoadDataRequest): Promise<unknown> {
-        await applyOrderProductPriceFilter(request.$context);
+        const result = await this.next?.handle(request);
 
-        return this.next?.handle(request);
+        await applyOrderProductLookupFilter(request.$context);
+
+        return result;
     }
 }
 
 @CrtRequestHandler({
     requestType: 'crt.HandleViewModelAttributeChangeRequest',
-    type: 'glb.OrderProductCustomerProductPriceFilterHandler',
+    type: 'glb.OrderProductCustomerProductLookupFilterHandler',
     scopes: [ORDER_PRODUCT_MOBILE_PAGE]
 })
-export class OrderProductCustomerProductPriceFilterHandler extends BaseRequestHandler<HandleViewModelAttributeChangeRequest> {
+export class OrderProductCustomerProductLookupFilterHandler
+    extends BaseRequestHandler<HandleViewModelAttributeChangeRequest> {
     public async handle(request: HandleViewModelAttributeChangeRequest): Promise<unknown> {
         const result = await this.next?.handle(request);
 
         if (request.attributeName === ORDER_PRODUCT_CUSTOMER_PRODUCT_ATTRIBUTE) {
-            await applyOrderProductPriceFilter(request.$context, request.value);
+            await applyOrderProductLookupFilter(request.$context, request.value);
         }
 
         return result;
@@ -873,8 +1103,8 @@ export class OrderDefaultsByContractChangeHandler extends BaseRequestHandler<Han
         SaveOrderAndCreateOrderProductHandler,
         OrderOwnersByAccountChangeHandler,
         OrderDefaultsByContractChangeHandler,
-        OrderProductPriceFilterHandler,
-        OrderProductCustomerProductPriceFilterHandler,
+        OrderProductLookupFilterHandler,
+        OrderProductCustomerProductLookupFilterHandler,
         OrderProductUnitByProductChangeHandler,
         OrderProductMobileFieldsStateHandler
     ]

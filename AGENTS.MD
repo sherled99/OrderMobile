@@ -184,32 +184,26 @@ OrderProductDS_Product_hg2hy0q_List_BusinessRule_Filter
 
 Current product filter:
 
-- If `UsrCustomerProduct = true`: `Price > 0`
-- If `UsrCustomerProduct = false`: `Price = 0`
+- The old `Price > 0` / `Price = 0` filter was replaced.
+- Resolve parent order from `OrderProductDS_Order`.
+- Load from `Order`:
+  - `Account`
+  - `UsrContract`
+  - `UsrType`
+- Then load `Contract.UsrPricelist` by `Order.UsrContract`. Do not rely on one-step mobile path `Order.UsrContract.UsrPricelist`; it can return empty in this module.
+- If `UsrCustomerProduct = true`, product lookup must satisfy all:
+  - `ProductPrice` exists where `ProductPrice.Product = Product.Id` and `ProductPrice.PriceList = Order.UsrContract.UsrPricelist`;
+  - product category is allowed for order type: `UsrOrderTypeProductCategory` exists where `UsrProductCategory = Product.Category` and `UsrOrderType = Order.UsrType`;
+  - either `UsrAccountProduct` exists where `UsrProduct = Product.Id`, `UsrAccount = Order.Account`, `RecordInactive = false`, or `Product.Category.UsrUseAccountProduct = false`.
+- If `UsrCustomerProduct = false`, only the order-type/category condition is applied.
 
-Use a compare filter DTO:
+Current reverse paths used in the filter DTO:
 
-```ts
-{
-    filterType: FilterType.Compare,
-    comparisonType: ComparisonType.Greater, // or ComparisonType.Equal
-    isEnabled: true,
-    trimDateTimeParameterToDate: false,
-    leftExpression: {
-        expressionType: 0,
-        columnPath: 'Price'
-    },
-    rightExpression: {
-        expressionType: 2,
-        parameter: {
-            dataValueType: DataValueType.Money,
-            value: 0
-        }
-    },
-    isAggregative: false,
-    key: '<stable-guid>'
-}
-```
+- Account product: `[UsrAccountProduct:UsrProduct].Id`
+- Price list product: `[ProductPrice:Product].Id`
+- Order type category by product category: `[UsrOrderTypeProductCategory:UsrProductCategory:Category].Id`
+
+If Creatio Mobile rejects the complex `Exists` filter on device, fallback plan is to load allowed `Product.Id` values and apply an `Id IN (...)` filter. Watch out for performance if the product set is large.
 
 ## Avoid Infinite Loading
 
@@ -242,8 +236,11 @@ For filters that depend on another field:
 Current dependency:
 
 - Field: `UsrCustomerProduct`
-- Handler: `OrderProductCustomerProductPriceFilterHandler`
-- Shared helper: `applyOrderProductPriceFilter(...)`
+- Load handler: `OrderProductLookupFilterHandler`
+- Change handler: `OrderProductCustomerProductLookupFilterHandler`
+- Shared helper: `applyOrderProductLookupFilter(...)`
+
+For `OrderProductLookupFilterHandler`, call `this.next?.handle(request)` first, then apply the filter. On initial page open, `OrderProductDS_Order` may not be available until after the base load handler finishes.
 
 ## Useful Helpers
 
