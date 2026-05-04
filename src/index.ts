@@ -25,7 +25,9 @@ const ORDER_PRODUCT_MOBILE_PAGE = 'UsrOrderProductMobileEditPage';
 const SAVE_ORDER_AND_CREATE_ORDER_PRODUCT_REQUEST = 'SaveOrderAndCreateOrderProduct';
 const ORDER_ID_ATTRIBUTE = 'Id';
 const ORDER_ACCOUNT_ATTRIBUTE = 'OrderDS_Account_5ohaihw';
+const ORDER_ACCOUNT_BUSINESS_RULE_FILTER_ATTRIBUTE = `${ORDER_ACCOUNT_ATTRIBUTE}_List_BusinessRule_Filter`;
 const ORDER_CONTRACT_ATTRIBUTE = 'OrderDS_UsrContract_k0jq8wn';
+const ORDER_CONTRACT_BUSINESS_RULE_FILTER_ATTRIBUTE = `${ORDER_CONTRACT_ATTRIBUTE}_List_BusinessRule_Filter`;
 const ORDER_CURRENCY_ATTRIBUTE = 'OrderDS_Currency_bpgbf8n';
 const ORDER_ADDITIONAL_INVOICE_CURRENCY_ATTRIBUTE = 'OrderDS_UsrAdditionalInvoiceCurrency_8tw6te5';
 const ORDER_ADDITIONAL_INVOICE_CURRENCY_EXCHANGE_RATE_ATTRIBUTE =
@@ -41,11 +43,14 @@ const ORDER_PRODUCT_ORDER_ATTRIBUTE = 'OrderProductDS_Order';
 const ORDER_PRODUCT_PRODUCT_BUSINESS_RULE_FILTER_ATTRIBUTE =
     `${ORDER_PRODUCT_PRODUCT_ATTRIBUTE}_List_BusinessRule_Filter`;
 const ORDER_PRODUCT_CUSTOMER_PRODUCT_ATTRIBUTE = 'UsrCustomerProduct';
+const ORDER_ACCOUNT_LOOKUP_FILTER_KEY = '7843f535-3e19-422b-8e40-5144a0d7989f';
+const ORDER_CONTRACT_LOOKUP_FILTER_KEY = '1bf4be71-4fe0-43c1-8d42-d94f0ad0ef98';
 const ORDER_PRODUCT_LOOKUP_FILTER_KEY = '4fa2fdd6-87be-4f71-9b1d-0fda6b694c7d';
 const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
 const debugLog = (...args: unknown[]): void => {
     (globalThis as { console?: { log: (...items: unknown[]) => void } }).console?.log(...args);
 };
+let orderContractLastAppliedLookupFilterStateKey: string | undefined;
 let orderProductLastAppliedLookupFilterStateKey: string | undefined;
 
 type LookupLike =
@@ -66,6 +71,10 @@ type ProductLookupFilter = {
 };
 
 type FilterItems = Record<string, unknown>;
+
+type OrderContractLookupFilterValues = {
+    accountId?: string;
+};
 
 type OrderProductLookupFilterValues = {
     customerProduct: boolean;
@@ -95,6 +104,62 @@ type UnitLoadResult = {
     source: 'UsrAccountProduct' | 'Product' | 'none';
     value: unknown;
 };
+
+async function applyOrderAccountLookupFilter(context: BaseRequest['$context']): Promise<void> {
+    const stateKey = 'mobileAccountOnly';
+    const currentFilter = await getContextAttributeValue(
+        context,
+        ORDER_ACCOUNT_BUSINESS_RULE_FILTER_ATTRIBUTE
+    ) as ProductLookupFilter | undefined;
+
+    if (isSameLookupFilter(currentFilter, ORDER_ACCOUNT_LOOKUP_FILTER_KEY, stateKey)) {
+        return;
+    }
+
+    await context.setAttribute(
+        ORDER_ACCOUNT_BUSINESS_RULE_FILTER_ATTRIBUTE,
+        createOrderAccountLookupFilter(stateKey)
+    );
+    debugLog(
+        `[UsrMobile] Account lookup business rule filter applied. ` +
+        `attribute=${ORDER_ACCOUNT_BUSINESS_RULE_FILTER_ATTRIBUTE}`
+    );
+}
+
+async function applyOrderContractLookupFilter(
+    context: BaseRequest['$context'],
+    accountValue?: unknown
+): Promise<void> {
+    const resolvedAccountValue = accountValue === undefined
+        ? await getContextAttributeValue(context, ORDER_ACCOUNT_ATTRIBUTE)
+        : accountValue;
+    const filterValues = {
+        accountId: extractLookupId(resolvedAccountValue)
+    };
+    const stateKey = createOrderContractLookupFilterStateKey(filterValues);
+    const currentFilter = await getContextAttributeValue(
+        context,
+        ORDER_CONTRACT_BUSINESS_RULE_FILTER_ATTRIBUTE
+    ) as ProductLookupFilter | undefined;
+
+    if (
+        isSameLookupFilter(currentFilter, ORDER_CONTRACT_LOOKUP_FILTER_KEY, stateKey) ||
+        orderContractLastAppliedLookupFilterStateKey === stateKey
+    ) {
+        return;
+    }
+
+    orderContractLastAppliedLookupFilterStateKey = stateKey;
+    await context.setAttribute(
+        ORDER_CONTRACT_BUSINESS_RULE_FILTER_ATTRIBUTE,
+        createOrderContractLookupFilter(filterValues, stateKey)
+    );
+    debugLog(
+        `[UsrMobile] Contract lookup business rule filter applied. ` +
+        `attribute=${ORDER_CONTRACT_BUSINESS_RULE_FILTER_ATTRIBUTE}, ` +
+        `accountId=${filterValues.accountId ?? 'n/a'}`
+    );
+}
 
 async function applyOrderProductLookupFilter(
     context: BaseRequest['$context'],
@@ -230,6 +295,37 @@ function createOrderProductLookupFilter(
     return createFilterGroup(LogicalOperatorType.And, rootItems, stateKey);
 }
 
+function createOrderAccountLookupFilter(stateKey: string): ProductLookupFilter {
+    return createFilterGroup(
+        LogicalOperatorType.And,
+        {
+            mobileType: createCompareFilter('Type.UsrMobile', true, DataValueType.Boolean),
+            validStatus: createCompareFilter('UsrStatus.UsrValid', true, DataValueType.Boolean)
+        },
+        stateKey,
+        ORDER_ACCOUNT_LOOKUP_FILTER_KEY
+    );
+}
+
+function createOrderContractLookupFilter(
+    values: OrderContractLookupFilterValues,
+    stateKey: string
+): ProductLookupFilter {
+    if (!values.accountId) {
+        return createImpossibleLookupFilter(stateKey, ORDER_CONTRACT_LOOKUP_FILTER_KEY);
+    }
+
+    return createFilterGroup(
+        LogicalOperatorType.And,
+        {
+            account: createCompareFilter('Account', values.accountId, DataValueType.Guid),
+            actualState: createCompareFilter('State.UsrActual', true, DataValueType.Boolean)
+        },
+        stateKey,
+        ORDER_CONTRACT_LOOKUP_FILTER_KEY
+    );
+}
+
 function createAccountProductOrCategoryFilter(accountId: string | undefined): ProductLookupFilter {
     const items: FilterItems = {
         categoryWithoutAccountProduct: createCompareFilter(
@@ -275,15 +371,20 @@ function createOrderTypeProductCategoryExistsFilter(orderTypeId: string): Produc
 }
 
 function createImpossibleProductFilter(stateKey: string): ProductLookupFilter {
+    return createImpossibleLookupFilter(stateKey, ORDER_PRODUCT_LOOKUP_FILTER_KEY);
+}
+
+function createImpossibleLookupFilter(stateKey: string, key: string): ProductLookupFilter {
     return createFilterGroup(LogicalOperatorType.And, {
-        impossibleProduct: createCompareFilter('Id', EMPTY_GUID, DataValueType.Guid)
-    }, stateKey);
+        impossibleLookup: createCompareFilter('Id', EMPTY_GUID, DataValueType.Guid)
+    }, stateKey, key);
 }
 
 function createFilterGroup(
     logicalOperation: LogicalOperatorType,
     items: FilterItems,
-    stateKey?: string
+    stateKey?: string,
+    key = ORDER_PRODUCT_LOOKUP_FILTER_KEY
 ): ProductLookupFilter {
     return {
         filterType: FilterType.FilterGroup,
@@ -292,7 +393,7 @@ function createFilterGroup(
         logicalOperation,
         items,
         ...(stateKey ? {
-            key: ORDER_PRODUCT_LOOKUP_FILTER_KEY,
+            key,
             stateKey
         } : {})
     };
@@ -353,12 +454,25 @@ function createOrderProductLookupFilterStateKey(values: OrderProductLookupFilter
     });
 }
 
+function createOrderContractLookupFilterStateKey(values: OrderContractLookupFilterValues): string {
+    return JSON.stringify({
+        accountId: values.accountId ?? null
+    });
+}
+
 function isSameOrderProductLookupFilter(
     filter: ProductLookupFilter | undefined,
     stateKey: string
 ): boolean {
-    return filter?.key === ORDER_PRODUCT_LOOKUP_FILTER_KEY
-        && filter.stateKey === stateKey;
+    return isSameLookupFilter(filter, ORDER_PRODUCT_LOOKUP_FILTER_KEY, stateKey);
+}
+
+function isSameLookupFilter(
+    filter: ProductLookupFilter | undefined,
+    key: string,
+    stateKey: string
+): boolean {
+    return filter?.key === key && filter.stateKey === stateKey;
 }
 
 async function getContextAttributeValue(
@@ -447,6 +561,36 @@ export class OrderProductMobileFieldsStateHandler extends BaseRequestHandler<Loa
 
 @CrtRequestHandler({
     requestType: 'crt.LoadDataRequest',
+    type: 'glb.OrderAccountLookupFilterHandler',
+    scopes: [ORDER_MOBILE_PAGE]
+})
+export class OrderAccountLookupFilterHandler extends BaseRequestHandler<LoadDataRequest> {
+    public async handle(request: LoadDataRequest): Promise<unknown> {
+        const result = await this.next?.handle(request);
+
+        await applyOrderAccountLookupFilter(request.$context);
+
+        return result;
+    }
+}
+
+@CrtRequestHandler({
+    requestType: 'crt.LoadDataRequest',
+    type: 'glb.OrderContractLookupFilterHandler',
+    scopes: [ORDER_MOBILE_PAGE]
+})
+export class OrderContractLookupFilterHandler extends BaseRequestHandler<LoadDataRequest> {
+    public async handle(request: LoadDataRequest): Promise<unknown> {
+        const result = await this.next?.handle(request);
+
+        await applyOrderContractLookupFilter(request.$context);
+
+        return result;
+    }
+}
+
+@CrtRequestHandler({
+    requestType: 'crt.LoadDataRequest',
     type: 'glb.OrderProductLookupFilterHandler',
     scopes: [ORDER_PRODUCT_MOBILE_PAGE]
 })
@@ -455,6 +599,31 @@ export class OrderProductLookupFilterHandler extends BaseRequestHandler<LoadData
         const result = await this.next?.handle(request);
 
         await applyOrderProductLookupFilter(request.$context);
+
+        return result;
+    }
+}
+
+@CrtRequestHandler({
+    requestType: 'crt.HandleViewModelAttributeChangeRequest',
+    type: 'glb.OrderContractByAccountChangeHandler',
+    scopes: [ORDER_MOBILE_PAGE]
+})
+export class OrderContractByAccountChangeHandler extends BaseRequestHandler<HandleViewModelAttributeChangeRequest> {
+    public async handle(request: HandleViewModelAttributeChangeRequest): Promise<unknown> {
+        const result = await this.next?.handle(request);
+
+        if (request.attributeName !== ORDER_ACCOUNT_ATTRIBUTE) {
+            return result;
+        }
+
+        const accountId = extractLookupId(request.value);
+        await request.$context.setAttribute(ORDER_CONTRACT_ATTRIBUTE, null);
+        await applyOrderContractLookupFilter(request.$context, request.value);
+        debugLog(
+            `[UsrMobile] Contract cleared and lookup filter updated because Account changed. ` +
+            `accountId=${accountId ?? 'n/a'}`
+        );
 
         return result;
     }
@@ -1101,6 +1270,9 @@ export class OrderDefaultsByContractChangeHandler extends BaseRequestHandler<Han
         OrderMobileFieldsStateHandler,
         GlbCustomLoadDataRequestHandler,
         SaveOrderAndCreateOrderProductHandler,
+        OrderAccountLookupFilterHandler,
+        OrderContractLookupFilterHandler,
+        OrderContractByAccountChangeHandler,
         OrderOwnersByAccountChangeHandler,
         OrderDefaultsByContractChangeHandler,
         OrderProductLookupFilterHandler,
